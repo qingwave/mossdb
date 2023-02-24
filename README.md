@@ -4,11 +4,12 @@ MossDB is a in-memory, persistent and embedded key-value store.
 
 Features:
 - Key-value memory store, just use a simple map to store key/value
-- Transactions supported, the MossDB also support transaction
+- Transactions supported
 - AOL persistent, use the wal to store every commit, just like redis append-only file
-- TTL supported, a simple lazy delete ttl policy, it will check expire when get a key
+- TTL supported, user can set the key with expire time that based on time heap
 - Watch interface, caller will receive event when the value of key changes
 - Embedded with a simple API
+- Multi storage engine, now it support Map and RadixTree as backend storage 
 
 ## Getting Started
 
@@ -65,7 +66,7 @@ The database allows for rich transactions, in which multiple objects are inserte
 
 ### Watch
 
-Watch interface just like etcd Watch, caller will receive event when the watched value modified.
+Watch interface just like etcd Watch(watch a key or prefix key), caller will receive event when the watched keys modified.
 
 ```golang
 func Watch(db *mossdb.DB) {
@@ -99,4 +100,12 @@ func Watch(db *mossdb.DB) {
 		}
 	}
 }
+```
+
+### TTL
+
+Key with expired time in useful sometimes, MossDB use a time heap to expire key near real-time. 
+
+```golang
+db.Set("key-ttl", []byte("val-ttl"), mossdb.WithTTL(100*time.Millisecond))
 ```

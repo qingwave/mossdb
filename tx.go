@@ -10,18 +10,18 @@ import (
 type Tx struct {
 	db      *DB
 	commits []*Record
-	inner   *store.Store
+	inner   store.Store
 }
 
 func (tx *Tx) lock() {
 	tx.db.mu.Lock()
 }
 
-func (tx *Tx) Unlock() {
+func (tx *Tx) unlock() {
 	tx.db.mu.Unlock()
 }
 
-func (db *DB) Begin() (*Tx, error) {
+func (db *DB) begin() (*Tx, error) {
 	if db.closed {
 		return nil, errors.New("mossDB has closed")
 	}
@@ -29,7 +29,7 @@ func (db *DB) Begin() (*Tx, error) {
 	tx := &Tx{
 		db:      db,
 		commits: make([]*Record, 0),
-		inner:   store.New(),
+		inner:   store.NewMap(),
 	}
 
 	tx.lock()
@@ -37,8 +37,8 @@ func (db *DB) Begin() (*Tx, error) {
 	return tx, nil
 }
 
-func (tx *Tx) Commit() error {
-	defer tx.Unlock()
+func (tx *Tx) commit() error {
+	defer tx.unlock()
 
 	if len(tx.commits) == 0 {
 		return nil
@@ -80,10 +80,10 @@ func (tx *Tx) Commit() error {
 	return nil
 }
 
-func (tx *Tx) RollBack() error {
+func (tx *Tx) rollBack() error {
 	tx.commits = nil
 	tx.inner = nil
-	tx.Unlock()
+	tx.unlock()
 
 	tx.db = nil
 	return nil
@@ -103,7 +103,7 @@ func (tx *Tx) Set(key string, val Val, opts ...Option) {
 	opt := setOption(key, val, opts...)
 
 	tx.commits = append(tx.commits, NewRecord(opt))
-	tx.inner.Set(key, val, opt.ttl)
+	tx.inner.Set(key, val)
 }
 
 func (tx *Tx) Delete(key string, opts ...Option) {
@@ -114,15 +114,15 @@ func (tx *Tx) Delete(key string, opts ...Option) {
 }
 
 func (db *DB) Tx(f func(tx *Tx) error) error {
-	tx, err := db.Begin()
+	tx, err := db.begin()
 	if err != nil {
 		return err
 	}
 
 	if err := f(tx); err != nil {
-		tx.RollBack()
+		tx.rollBack()
 		return err
 	}
 
-	return tx.Commit()
+	return tx.commit()
 }

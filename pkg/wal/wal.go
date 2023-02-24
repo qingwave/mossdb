@@ -346,10 +346,6 @@ func (l *Log) writeBatch(b *Batch, opts ...LogOpition) (int, error) {
 		if n, err := l.sfile.Write(s.cbuf[mark:]); err != nil {
 			return n, err
 		}
-		if len(b.entries) > 10 {
-			last := s.cpos[len(s.cpos)-1]
-			return last.end - last.pos, errors.New("some error")
-		}
 	}
 
 	if !l.opts.NoSync && option.sync {

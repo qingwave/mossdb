@@ -1,6 +1,8 @@
 package mossdb
 
-import "time"
+import (
+	"time"
+)
 
 type OpType uint16
 
@@ -9,6 +11,7 @@ const (
 	ModifyOp
 	DeleteOp
 	WatchOP
+	ListOp
 )
 
 var opMap = map[OpType]string{
@@ -26,11 +29,15 @@ type Op struct {
 	op OpType
 
 	key string
+	end string
 	val Val
 
 	ttl int64
 
 	prefix bool
+	all    bool
+
+	msg string
 
 	createdNotify bool
 	updateNotify  bool
@@ -47,6 +54,10 @@ func NewOption(op OpType, key string, val Val, opts ...Option) *Op {
 
 func getOption(key string, opts ...Option) Op {
 	return *NewOption(GetOp, key, nil, opts...)
+}
+
+func listOption(opts ...Option) Op {
+	return *NewOption(ListOp, "", nil, opts...)
 }
 
 func setOption(key string, val Val, opts ...Option) *Op {
@@ -83,6 +94,19 @@ func WithPrefix() Option {
 	}
 }
 
+func WithPrefixKey(key string) Option {
+	return func(opt *Op) {
+		opt.key = key
+		opt.prefix = true
+	}
+}
+
+func WithAll() Option {
+	return func(opt *Op) {
+		opt.all = true
+	}
+}
+
 func WithCreateNotify() Option {
 	return func(opt *Op) {
 		opt.createdNotify = true
@@ -98,5 +122,11 @@ func WithUpdateNotify() Option {
 func WithDeleteNotify() Option {
 	return func(opt *Op) {
 		opt.deleteNotify = true
+	}
+}
+
+func WithMsg(msg string) Option {
+	return func(opt *Op) {
+		opt.msg = msg
 	}
 }

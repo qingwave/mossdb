@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/qingwave/mossdb/pkg/store"
+	"github.com/qingwave/mossdb/pkg/ttl"
 	"github.com/qingwave/mossdb/pkg/wal"
 )
 
@@ -16,22 +18,28 @@ func New(conf *Config) (*DB, error) {
 		return nil, err
 	}
 	db := &DB{
-		store:   store.New(),
+		store:   conf.Store,
 		wal:     wal,
 		watcher: NewWatcher(),
 	}
+
+	db.ttl = ttl.New(func(key string) error {
+		return db.Delete(key, WithMsg("Expired"))
+	})
 
 	if err := db.loadWal(); err != nil {
 		return nil, err
 	}
 
 	go db.watcher.Run()
+	go db.ttl.Run()
 
 	return db, nil
 }
 
 type Config struct {
 	WalPath string
+	Store   store.Store
 }
 
 func (c *Config) Default() *Config {
@@ -41,6 +49,9 @@ func (c *Config) Default() *Config {
 	if c.WalPath == "" {
 		c.WalPath = "moss"
 	}
+	if c.Store == nil {
+		c.Store = store.NewRadixTree()
+	}
 	return c
 }
 
@@ -48,18 +59,20 @@ type Val []byte
 
 type DB struct {
 	mu      sync.RWMutex
-	store   *store.Store
+	store   store.Store
 	closed  bool
 	wal     *wal.Log
 	watcher *Watcher
+	ttl     *ttl.TTL
 }
 
 func (db *DB) Close() {
+	db.watcher.Close()
+	db.ttl.Stop()
+
 	if db.wal != nil {
 		db.wal.Close()
 	}
-
-	db.watcher.Close()
 
 	db.closed = true
 }
@@ -75,7 +88,28 @@ func (db *DB) Get(key string, opts ...Option) Val {
 		return nil
 	}
 
+	if db.ttl.IsExpired(key) {
+		return nil
+	}
+
 	return val
+}
+
+func (db *DB) List(opts ...Option) map[string][]byte {
+	op := listOption(opts...)
+
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if op.all {
+		return db.store.Dump()
+	}
+
+	if op.prefix && op.key != "" {
+		return db.store.Prefix(op.key)
+	}
+
+	return make(map[string][]byte)
 }
 
 func (db *DB) Set(key string, val Val, opts ...Option) error {
@@ -88,7 +122,13 @@ func (db *DB) Set(key string, val Val, opts ...Option) error {
 		return err
 	}
 
-	db.store.Set(key, val, opt.ttl)
+	db.store.Set(key, val)
+	if opt.ttl > 0 {
+		db.ttl.Add(&ttl.Job{
+			Key:      key,
+			Schedule: time.Unix(0, opt.ttl),
+		})
+	}
 
 	db.notify(opt)
 
@@ -106,6 +146,7 @@ func (db *DB) Delete(key string, opts ...Option) error {
 	}
 
 	db.store.Delete(key)
+	db.ttl.Delete(key)
 
 	db.notify(opt)
 
@@ -120,7 +161,7 @@ func (db *DB) Flush() error {
 	if err := db.wal.Flush(); err != nil {
 		return nil
 	}
-	db.store = store.New()
+	db.store = store.NewMap()
 	return nil
 }
 
@@ -157,7 +198,7 @@ func (db *DB) loadWal() error {
 func (db *DB) loadRecord(record *Record) error {
 	switch record.Op {
 	case uint16(ModifyOp):
-		db.store.Set(string(record.Key), record.Val, int64(record.TTL))
+		db.store.Set(string(record.Key), record.Val)
 	case uint16(DeleteOp):
 		db.store.Delete(string(record.Key))
 	default:
