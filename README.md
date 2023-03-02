@@ -11,6 +11,10 @@ Features:
 - Embedded with a simple API
 - Multi storage engine, now it support Map and RadixTree as backend storage 
 
+The architecture of MossDB as follows:
+
+![MossDB](./doc/mossdb.png)
+
 ## Getting Started
 
 ### Getting MossDB
