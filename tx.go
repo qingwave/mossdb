@@ -3,14 +3,13 @@ package mossdb
 import (
 	"errors"
 
-	"github.com/qingwave/mossdb/pkg/store"
 	"github.com/qingwave/mossdb/pkg/wal"
 )
 
 type Tx struct {
 	db      *DB
 	commits []*Record
-	inner   store.Store
+	undos   []*Record
 }
 
 func (tx *Tx) lock() {
@@ -29,7 +28,7 @@ func (db *DB) begin() (*Tx, error) {
 	tx := &Tx{
 		db:      db,
 		commits: make([]*Record, 0),
-		inner:   store.NewMap(),
+		undos:   make([]*Record, 0),
 	}
 
 	tx.lock()
@@ -38,8 +37,6 @@ func (db *DB) begin() (*Tx, error) {
 }
 
 func (tx *Tx) commit() error {
-	defer tx.unlock()
-
 	if len(tx.commits) == 0 {
 		return nil
 	}
@@ -61,12 +58,8 @@ func (tx *Tx) commit() error {
 		return err
 	}
 
-	// write to memory db
+	// notify all commit
 	for _, commit := range tx.commits {
-		if err := tx.db.loadRecord(commit); err != nil {
-			return err
-		}
-
 		tx.db.notify(&Op{
 			key: string(commit.Key),
 			val: commit.Val,
@@ -75,42 +68,81 @@ func (tx *Tx) commit() error {
 	}
 
 	tx.commits = nil
-	tx.inner = nil
+	tx.undos = nil
+	tx.unlock()
 
 	return nil
 }
 
 func (tx *Tx) rollBack() error {
 	tx.commits = nil
-	tx.inner = nil
+
+	for _, undo := range tx.undos {
+		if err := tx.db.loadRecord(undo); err != nil {
+			return err
+		}
+	}
+
 	tx.unlock()
 
+	tx.undos = nil
 	tx.db = nil
 	return nil
 }
 
 func (tx *Tx) Get(key string, opts ...Option) Val {
-	val, ok := tx.inner.Get(key)
-	if ok {
-		return val
-	}
-
-	val, _ = tx.db.store.Get(key)
+	val, _ := tx.db.store.Get(key)
 	return val
 }
 
-func (tx *Tx) Set(key string, val Val, opts ...Option) {
-	opt := setOption(key, val, opts...)
+func (tx *Tx) List(opts ...Option) map[string][]byte {
+	op := listOption(opts...)
 
-	tx.commits = append(tx.commits, NewRecord(opt))
-	tx.inner.Set(key, val)
+	if op.all {
+		return tx.db.store.Dump()
+	}
+
+	if op.prefix && op.key != "" {
+		return tx.db.store.Prefix(op.key)
+	}
+
+	return make(map[string][]byte)
+}
+
+func (tx *Tx) Set(key string, val Val, opts ...Option) {
+	op := setOption(key, val, opts...)
+
+	undo := &Op{key: key}
+	old, ok := tx.db.store.Get(key)
+	if ok {
+		undo.op = ModifyOp
+		undo.val = old
+	} else {
+		undo.op = DeleteOp
+	}
+
+	tx.undos = append(tx.undos, NewRecord(undo))
+	tx.commits = append(tx.commits, NewRecord(op))
+
+	tx.db.set(op)
 }
 
 func (tx *Tx) Delete(key string, opts ...Option) {
-	opt := deleteOption(key, opts...)
+	op := deleteOption(key, opts...)
 
-	tx.commits = append(tx.commits, NewRecord(opt))
-	tx.inner.Delete(key)
+	undo := &Op{key: key}
+	old, ok := tx.db.store.Get(key)
+	if ok {
+		undo.op = ModifyOp
+		undo.val = old
+		tx.undos = append(tx.undos, NewRecord(undo))
+	} else {
+		return
+	}
+
+	tx.commits = append(tx.commits, NewRecord(op))
+
+	tx.db.delete(op)
 }
 
 func (db *DB) Tx(f func(tx *Tx) error) error {
@@ -119,10 +151,17 @@ func (db *DB) Tx(f func(tx *Tx) error) error {
 		return err
 	}
 
-	if err := f(tx); err != nil {
-		tx.rollBack()
+	defer func() {
+		if err != nil {
+			tx.rollBack()
+		}
+	}()
+
+	if err = f(tx); err != nil {
 		return err
 	}
 
-	return tx.commit()
+	err = tx.commit()
+
+	return err
 }

@@ -75,3 +75,11 @@ func NewRecord(opt *Op) *Record {
 		TTL:       uint64(opt.ttl),
 	}
 }
+
+func OpFromRecord(record *Record) *Op {
+	return &Op{
+		key: string(record.Key),
+		val: record.Val,
+		ttl: int64(record.TTL),
+	}
+}

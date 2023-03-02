@@ -113,44 +113,52 @@ func (db *DB) List(opts ...Option) map[string][]byte {
 }
 
 func (db *DB) Set(key string, val Val, opts ...Option) error {
-	opt := setOption(key, val, opts...)
+	op := setOption(key, val, opts...)
 
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if err := db.buildAndStoreRecord(opt); err != nil {
+	if err := db.buildAndStoreRecord(op); err != nil {
 		return err
 	}
 
-	db.store.Set(key, val)
-	if opt.ttl > 0 {
-		db.ttl.Add(&ttl.Job{
-			Key:      key,
-			Schedule: time.Unix(0, opt.ttl),
-		})
-	}
+	db.set(op)
 
-	db.notify(opt)
+	db.notify(op)
 
 	return nil
 }
 
+func (db *DB) set(op *Op) {
+	db.store.Set(op.key, op.val)
+	if op.ttl > 0 {
+		db.ttl.Add(&ttl.Job{
+			Key:      op.key,
+			Schedule: time.Unix(0, op.ttl),
+		})
+	}
+}
+
 func (db *DB) Delete(key string, opts ...Option) error {
-	opt := deleteOption(key, opts...)
+	op := deleteOption(key, opts...)
 
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if err := db.buildAndStoreRecord(opt); err != nil {
+	if err := db.buildAndStoreRecord(op); err != nil {
 		return err
 	}
 
-	db.store.Delete(key)
-	db.ttl.Delete(key)
+	db.delete(op)
 
-	db.notify(opt)
+	db.notify(op)
 
 	return nil
+}
+
+func (db *DB) delete(op *Op) {
+	db.store.Delete(op.key)
+	db.ttl.Delete(op.key)
 }
 
 func (db *DB) Watch(ctx context.Context, key string, opts ...Option) <-chan WatchResponse {
@@ -196,19 +204,20 @@ func (db *DB) loadWal() error {
 }
 
 func (db *DB) loadRecord(record *Record) error {
+	op := OpFromRecord(record)
 	switch record.Op {
 	case uint16(ModifyOp):
-		db.store.Set(string(record.Key), record.Val)
+		db.set(op)
 	case uint16(DeleteOp):
-		db.store.Delete(string(record.Key))
+		db.delete(op)
 	default:
 		return fmt.Errorf("invalid operation %d", record.Op)
 	}
 	return nil
 }
 
-func (db *DB) buildAndStoreRecord(opt *Op) error {
-	record := NewRecord(opt)
+func (db *DB) buildAndStoreRecord(op *Op) error {
+	record := NewRecord(op)
 	data, err := record.Encode()
 	if err != nil {
 		return err
@@ -225,14 +234,14 @@ func (db *DB) buildAndStoreRecord(opt *Op) error {
 	return nil
 }
 
-func (db *DB) notify(opt *Op) {
-	if opt == nil || !opt.IsMutate() {
+func (db *DB) notify(op *Op) {
+	if op == nil || !op.IsMutate() {
 		return
 	}
 
 	db.watcher.AddEvent(&WatchEvent{
-		Key: opt.key,
-		Val: opt.val,
-		Op:  opt.op,
+		Key: op.key,
+		Val: op.val,
+		Op:  op.op,
 	})
 }
