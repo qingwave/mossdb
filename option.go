@@ -39,6 +39,8 @@ type Op struct {
 
 	msg string
 
+	watchSendTimeout time.Duration
+
 	createdNotify bool
 	updateNotify  bool
 	deleteNotify  bool
@@ -128,5 +130,11 @@ func WithDeleteNotify() Option {
 func WithMsg(msg string) Option {
 	return func(opt *Op) {
 		opt.msg = msg
+	}
+}
+
+func WithWatchSendTimeout(timeout time.Duration) Option {
+	return func(opt *Op) {
+		opt.watchSendTimeout = timeout
 	}
 }

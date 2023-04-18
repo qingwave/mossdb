@@ -102,7 +102,7 @@ func Watch(db *mossdb.DB) {
 				log.Printf("watch done")
 				return
 			}
-			log.Printf("receive event: %s, key: %s, new val: %s", resp.Event.Op, resp.Event.Key, resp.Event.Val)
+			log.Printf("receive event: %s, watch id %s,  key: %s, new val: %s", resp.Event.Op, resp.Wid, resp.Event.Key, resp.Event.Val)
 		}
 	}
 }

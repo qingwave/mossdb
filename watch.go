@@ -2,17 +2,17 @@ package mossdb
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
-	"encoding/hex"
-	"io"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/qingwave/gocorex/containerx"
 	"github.com/qingwave/gocorex/syncx/workqueue"
 	"github.com/qingwave/mossdb/pkg/store/art"
 )
+
+const DefaultSendTimeout = 1 * time.Second
 
 type Watcher struct {
 	mu       sync.RWMutex
@@ -21,6 +21,7 @@ type Watcher struct {
 	ranges   *art.Tree
 	queue    workqueue.WorkQueue
 	stop     chan struct{}
+	autoId   *atomic.Uint64
 }
 
 type SubWatcher struct {
@@ -32,7 +33,7 @@ type SubWatcher struct {
 }
 
 type WatchResponse struct {
-	WId      string
+	Wid      string
 	Event    *WatchEvent
 	Canceled bool
 }
@@ -51,6 +52,7 @@ func NewWatcher() *Watcher {
 		ranges:   art.New(),
 		queue:    workqueue.New(),
 		stop:     make(chan struct{}),
+		autoId:   &atomic.Uint64{},
 	}
 }
 
@@ -58,7 +60,7 @@ func (w *Watcher) Watch(ctx context.Context, key string, opts ...Option) <-chan 
 	opt := watchOption(key, opts...)
 
 	ch := make(chan WatchResponse)
-	wid := watchId()
+	wid := w.watchId()
 	subWatcher := &SubWatcher{
 		wid: wid,
 		ctx: ctx,
@@ -118,10 +120,31 @@ func (w *Watcher) Run() {
 
 		w.mu.RLock()
 		for _, sw := range w.watchersByKey(event.Key) {
-			sw.ch <- WatchResponse{
-				WId:   sw.wid,
-				Event: event,
+			sw := sw
+			if sw.canceled {
+				continue
 			}
+
+			go func() {
+				defer func() {
+					recover()
+				}()
+
+				timeout := DefaultSendTimeout
+				if sw.opt.watchSendTimeout > 0 {
+					timeout = sw.opt.watchSendTimeout
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), timeout)
+				defer cancel()
+
+				select {
+				case sw.ch <- WatchResponse{
+					Wid:   sw.wid,
+					Event: event,
+				}:
+				case <-ctx.Done():
+				}
+			}()
 		}
 		w.mu.RUnlock()
 	}
@@ -197,15 +220,6 @@ func (w *Watcher) watchersByKey(key string) []*SubWatcher {
 	return watchers
 }
 
-func watchId() string {
-	var wid [12]byte
-
-	now := time.Now().UnixNano()
-	binary.BigEndian.PutUint64(wid[:8], uint64(now))
-	io.ReadFull(rand.Reader, wid[8:12])
-
-	buf := make([]byte, hex.EncodedLen(len(wid)))
-	hex.Encode(buf[:], wid[:])
-
-	return string(buf[:])
+func (w *Watcher) watchId() string {
+	return strconv.FormatUint(w.autoId.Add(1), 10)
 }
