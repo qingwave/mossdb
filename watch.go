@@ -126,23 +126,23 @@ func (w *Watcher) Run() {
 			}
 
 			go func() {
-				defer func() {
-					recover()
-				}()
-
 				timeout := DefaultSendTimeout
 				if sw.opt.watchSendTimeout > 0 {
 					timeout = sw.opt.watchSendTimeout
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), timeout)
-				defer cancel()
+				timer := time.NewTimer(timeout)
+				defer timer.Stop()
 
 				select {
+				// send event
 				case sw.ch <- WatchResponse{
 					Wid:   sw.wid,
 					Event: event,
 				}:
-				case <-ctx.Done():
+				// watch ctx done
+				case <-sw.ctx.Done():
+				// send event timeout
+				case <-timer.C:
 				}
 			}()
 		}
