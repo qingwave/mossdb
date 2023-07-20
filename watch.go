@@ -10,9 +10,10 @@ import (
 	"github.com/qingwave/gocorex/containerx"
 	"github.com/qingwave/gocorex/syncx/workqueue"
 	"github.com/qingwave/mossdb/pkg/store/art"
+	"github.com/qingwave/mossdb/pkg/utils"
 )
 
-const DefaultSendTimeout = 1 * time.Second
+const DefaultWatcherQueueSize = 1024
 
 type Watcher struct {
 	mu       sync.RWMutex
@@ -28,8 +29,18 @@ type SubWatcher struct {
 	wid      string
 	ctx      context.Context
 	ch       chan WatchResponse
+	new      chan struct{}
+	events   *utils.Ring[*WatchEvent]
 	opt      *Op
 	canceled bool
+}
+
+func (sw *SubWatcher) PushEvent(e *WatchEvent) {
+	sw.events.PushBack(e)
+	select {
+	case sw.new <- struct{}{}:
+	default:
+	}
 }
 
 type WatchResponse struct {
@@ -58,19 +69,25 @@ func NewWatcher() *Watcher {
 
 func (w *Watcher) Watch(ctx context.Context, key string, opts ...Option) <-chan WatchResponse {
 	opt := watchOption(key, opts...)
+	eventQueueSize := DefaultWatcherQueueSize
+	if opt.eventBuffSize > 0 {
+		eventQueueSize = opt.eventBuffSize
+	}
 
 	ch := make(chan WatchResponse)
 	wid := w.watchId()
-	subWatcher := &SubWatcher{
-		wid: wid,
-		ctx: ctx,
-		ch:  ch,
-		opt: opt,
+	sw := &SubWatcher{
+		wid:    wid,
+		ctx:    ctx,
+		new:    make(chan struct{}),
+		ch:     ch,
+		events: utils.NewRing[*WatchEvent](eventQueueSize),
+		opt:    opt,
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.watchers[wid] = subWatcher
+	w.watchers[wid] = sw
 	if opt.prefix {
 		bkey := []byte(key)
 		items, ok := w.ranges.Search(bkey).(containerx.Set[string])
@@ -89,17 +106,50 @@ func (w *Watcher) Watch(ctx context.Context, key string, opts ...Option) <-chan 
 	}
 
 	go func() {
-		select {
-		case <-ctx.Done():
-			w.mu.Lock()
-			w.evict(subWatcher)
-			w.mu.Unlock()
-		case <-w.stop:
-			return
+		for {
+			if sw.canceled {
+				return
+			}
+
+			var tickc <-chan time.Time
+
+			event := sw.events.Front()
+			if event != nil {
+				if sw.send(event) {
+					sw.events.PopFront()
+					continue
+				} else {
+					tickc = time.After(10 * time.Millisecond)
+				}
+			}
+
+			select {
+			case <-sw.new:
+			case <-tickc:
+			case <-ctx.Done():
+				w.mu.Lock()
+				w.evict(sw)
+				w.mu.Unlock()
+				return
+			case <-w.stop:
+				return
+			}
 		}
 	}()
 
 	return ch
+}
+
+func (sw *SubWatcher) send(event *WatchEvent) bool {
+	select {
+	case sw.ch <- WatchResponse{
+		Wid:   sw.wid,
+		Event: event,
+	}:
+		return true
+	default:
+		return false
+	}
 }
 
 func (w *Watcher) AddEvent(event *WatchEvent) {
@@ -120,31 +170,11 @@ func (w *Watcher) Run() {
 
 		w.mu.RLock()
 		for _, sw := range w.watchersByKey(event.Key) {
-			sw := sw
 			if sw.canceled {
 				continue
 			}
 
-			go func() {
-				timeout := DefaultSendTimeout
-				if sw.opt.watchSendTimeout > 0 {
-					timeout = sw.opt.watchSendTimeout
-				}
-				timer := time.NewTimer(timeout)
-				defer timer.Stop()
-
-				select {
-				// send event
-				case sw.ch <- WatchResponse{
-					Wid:   sw.wid,
-					Event: event,
-				}:
-				// watch ctx done
-				case <-sw.ctx.Done():
-				// send event timeout
-				case <-timer.C:
-				}
-			}()
+			sw.PushEvent(event)
 		}
 		w.mu.RUnlock()
 	}
@@ -167,8 +197,9 @@ func (w *Watcher) evict(sw *SubWatcher) error {
 		return nil
 	}
 	if !sw.canceled {
-		close(sw.ch)
 		sw.canceled = true
+		close(sw.new)
+		close(sw.ch)
 	}
 
 	if sw.opt.prefix {
