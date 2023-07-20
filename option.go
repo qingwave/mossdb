@@ -39,11 +39,11 @@ type Op struct {
 
 	msg string
 
-	watchSendTimeout time.Duration
-
 	createdNotify bool
 	updateNotify  bool
 	deleteNotify  bool
+
+	eventBuffSize int
 }
 
 func NewOption(op OpType, key string, val Val, opts ...Option) *Op {
@@ -133,8 +133,10 @@ func WithMsg(msg string) Option {
 	}
 }
 
-func WithWatchSendTimeout(timeout time.Duration) Option {
+func WithWatchEventBuffSize(size int) Option {
 	return func(opt *Op) {
-		opt.watchSendTimeout = timeout
+		if size > 0 {
+			opt.eventBuffSize = size
+		}
 	}
 }

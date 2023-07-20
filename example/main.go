@@ -75,7 +75,7 @@ func main() {
 func Watch(db *mossdb.DB) {
 	key := "watch-key"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	// start watch key
@@ -87,7 +87,7 @@ func Watch(db *mossdb.DB) {
 		db.Set(key, mossdb.Val("val2"))
 		db.Delete(key)
 
-		time.Sleep(100 * time.Second)
+		time.Sleep(100 * time.Millisecond)
 
 		db.Set(key, mossdb.Val("val3"))
 	}()
@@ -102,7 +102,9 @@ func Watch(db *mossdb.DB) {
 				log.Printf("watch done")
 				return
 			}
+
 			log.Printf("receive event: %s, watch id %s,  key: %s, new val: %s", resp.Event.Op, resp.Wid, resp.Event.Key, resp.Event.Val)
+			time.Sleep(200 * time.Millisecond)
 		}
 	}
 }
