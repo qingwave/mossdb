@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,11 +13,14 @@ import (
 )
 
 var (
-	ErrCorrupt  = errors.New("log corrupt")
-	ErrClosed   = errors.New("log closed")
-	ErrNotFound = errors.New("not found")
-	ErrEOF      = errors.New("end of file reached")
+	ErrCorrupt    = errors.New("log corrupt")
+	ErrClosed     = errors.New("log closed")
+	ErrInvaildCRC = errors.New("invaild crc")
+	ErrNotFound   = errors.New("not found")
+	ErrEOF        = errors.New("end of file reached")
 )
+
+const crcSize = crc32.Size
 
 type Options struct {
 	// NoSync disables fsync after writes. This is less durable and puts the
@@ -241,11 +245,17 @@ func (l *Log) cycle() error {
 	return nil
 }
 
+// append data with crc
 func appendBinaryEntry(dst []byte, data []byte) (out []byte, cpos bpos) {
 	// data_size + data
 	pos := len(dst)
-	dst = appendUvarint(dst, uint64(len(data)))
-	dst = append(dst, data...)
+	sum := crc32.ChecksumIEEE(data)
+	buf := make([]byte, crcSize+len(data))
+	binary.BigEndian.PutUint32(buf[:crcSize], sum)
+	copy(buf[crcSize:], data)
+
+	dst = appendUvarint(dst, uint64(len(buf)))
+	dst = append(dst, buf...)
 	return dst, bpos{pos, len(dst)}
 }
 
@@ -472,11 +482,19 @@ func (l *Log) Read(segment, index uint64) (data []byte, err error) {
 	if n <= 0 {
 		return nil, ErrCorrupt
 	}
-	if uint64(len(edata)-n) < size {
+
+	if uint64(len(edata)-n) < size || size < crcSize {
 		return nil, ErrCorrupt
 	}
-	data = make([]byte, size)
-	copy(data, edata[n:])
+
+	sum := binary.BigEndian.Uint32(edata[n : n+crcSize])
+	data = make([]byte, size-crcSize)
+	copy(data, edata[n+crcSize:])
+
+	if sum != crc32.ChecksumIEEE(data) {
+		return nil, ErrInvaildCRC
+	}
+
 	return data, nil
 }
 
