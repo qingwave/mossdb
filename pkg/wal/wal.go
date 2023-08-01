@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 var (
@@ -18,9 +20,13 @@ var (
 	ErrInvaildCRC = errors.New("invaild crc")
 	ErrNotFound   = errors.New("not found")
 	ErrEOF        = errors.New("end of file reached")
+	ErrFailedLock = errors.New("failed to get file lock")
 )
 
-const crcSize = crc32.Size
+const (
+	crcSize  = crc32.Size
+	lockFile = `flock`
+)
 
 type Options struct {
 	// NoSync disables fsync after writes. This is less durable and puts the
@@ -70,6 +76,8 @@ type Log struct {
 	opts    Options
 	closed  bool
 	corrupt bool
+
+	flock *flock.Flock
 }
 
 // segment represents a single segment file.
@@ -96,14 +104,43 @@ func Open(path string, opts *Options) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &Log{path: path, opts: *opts}
+
+	l := &Log{path: path, opts: *opts, flock: flock.New(filepath.Join(path, lockFile))}
+
+	if err := l.tryLock(3, 100*time.Millisecond); err != nil {
+		return nil, err
+	}
+
 	if err := os.MkdirAll(path, l.opts.DirPerms); err != nil {
 		return nil, err
 	}
+
 	if err := l.load(); err != nil {
 		return nil, err
 	}
+
 	return l, nil
+}
+
+func (l *Log) tryLock(times int, interval time.Duration) error {
+	if l.flock == nil {
+		return fmt.Errorf("flock is nil")
+	}
+
+	var ok bool
+	var err error
+	for i := 0; i < times; i++ {
+		ok, err = l.flock.TryLock()
+		if ok {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		time.Sleep(interval)
+	}
+
+	return ErrFailedLock
 }
 
 func (l *Log) load() error {
@@ -168,6 +205,9 @@ func segmentName(index uint64) string {
 func (l *Log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	defer l.flock.Unlock()
+
 	if l.closed {
 		if l.corrupt {
 			return ErrCorrupt

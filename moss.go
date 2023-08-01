@@ -13,7 +13,7 @@ import (
 
 func New(conf *Config) (*DB, error) {
 	conf = conf.Default()
-	wal, err := wal.Open(conf.WalPath, nil)
+	wal, err := wal.Open(conf.Path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -38,16 +38,16 @@ func New(conf *Config) (*DB, error) {
 }
 
 type Config struct {
-	WalPath string
-	Store   store.Store
+	Path  string
+	Store store.Store
 }
 
 func (c *Config) Default() *Config {
 	if c == nil {
 		c = &Config{}
 	}
-	if c.WalPath == "" {
-		c.WalPath = "moss"
+	if c.Path == "" {
+		c.Path = "moss"
 	}
 	if c.Store == nil {
 		c.Store = store.NewRadixTree()

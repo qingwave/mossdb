@@ -34,8 +34,8 @@ func init() {
 
 	var err error
 	db, err = mossdb.New(&mossdb.Config{
-		WalPath: testDir,
-		Store:   store.NewRadixTree(),
+		Path:  testDir,
+		Store: store.NewRadixTree(),
 	})
 	if err != nil {
 		panic(err)
