@@ -107,11 +107,11 @@ func Open(path string, opts *Options) (*Log, error) {
 
 	l := &Log{path: path, opts: *opts, flock: flock.New(filepath.Join(path, lockFile))}
 
-	if err := l.tryLock(3, 100*time.Millisecond); err != nil {
+	if err := os.MkdirAll(path, l.opts.DirPerms); err != nil {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(path, l.opts.DirPerms); err != nil {
+	if err := l.tryLock(3, 100*time.Millisecond); err != nil {
 		return nil, err
 	}
 
